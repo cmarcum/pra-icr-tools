@@ -106,7 +106,3 @@ python pra-icr-download.py 202601-0920-012 --collections
 ```bash
 python pra-icr-download.py 202601-0920-012 --supporting
 ```
-
----
-
-For both functions, please ensure the `--delay` parameter is used responsibly to avoid overwhelming federal servers during large, automated queries.
