@@ -61,7 +61,7 @@ def get_monthly_chunks(start_str, end_str):
 def scrape_payload(session, user_params, delay):
     """
     This massive code chunk was written with Google gemini. It executes the search using the 
-    forms and r eturns a status flag and the extracted rows.
+    forms and returns a status flag and the extracted rows.
     """
     try:
         initial_resp = session.get(SEARCH_URL, timeout=15)
@@ -94,6 +94,7 @@ def scrape_payload(session, user_params, delay):
 
     page_number = 1
     extracted_rows = []
+    expected_pages = None
     
     try:
         while True:
@@ -106,7 +107,14 @@ def scrape_payload(session, user_params, delay):
                 page_text = soup.get_text(separator=' ')
                 records_match = re.search(r'Number Of Records Found:\s*([\d,]+)', page_text, re.IGNORECASE)
                 if records_match:
-                    print(f"  [*] Total Records Found: {records_match.group(1)}")
+                    total_records_str = records_match.group(1).replace(',', '')
+                    try:
+                        total_records = int(total_records_str)
+                        # Math ceiling division to safely calculate exact number of pages upfront
+                        expected_pages = (total_records + 9) // 10 
+                        print(f"  [*] Total Records Found: {total_records} (Calculated Target: {expected_pages} pages)")
+                    except ValueError:
+                        print(f"  [*] Total Records Found: {records_match.group(1)}")
                 else:
                     print("  [*] Total Records Found: (Could not parse number from page)")
 
@@ -132,74 +140,66 @@ def scrape_payload(session, user_params, delay):
                 if len(cols) >= 9:
                     if "OMB Control No" in cols[0] or "OMB Control No" in cols[1]:
                         continue 
+                    # Removed deduplication logic; explicitly keeping all records
                     extracted_rows.append(cols[:10])
                     rows_added_this_page += 1
                     
             print(f"  [*] Scraped page {page_number}. Rows collected: {rows_added_this_page} (Total: {len(extracted_rows)})")
                     
+            # Using basic logic to exit and prevent an infinite loop since we can't pull n.pages from JS
+            if expected_pages and page_number >= expected_pages:
+                print(f"  [*] Reached the calculated final page ({expected_pages}). Safely ending pagination loop.")
+                break
+            
             if rows_added_this_page == 0 and page_number > 1:
                 print("  [-] Next page loaded but contained no data rows. Ending pagination.")
                 break
                 
-            next_href = None
+            # Grab the current form tokens so the server doesn't reject our next request
+            current_form = soup.find('form', id='PRASearchForm')
+            if current_form:
+                for hidden in current_form.find_all('input', type='hidden'):
+                    name = hidden.get('name')
+                    val = hidden.get('value', '')
+                    if name:
+                        payload[name] = val
+                        
+            payload['operation'] = '2'
+            payload.update(user_params)
+ 
+            '''
+                JS pagination using the soup!
+                This code chunk was written by Google gemini - it fixes the pagination issue by iterating on the JS using onClick
+            '''
+                
+            next_page_val = None
             for a in soup.find_all('a'):
-                if not a.has_attr('href'):
-                    continue
                 text = a.get_text(strip=True).lower()
                 alt_texts = " ".join([img.get('alt', '').lower() for img in a.find_all('img')])
                 if 'next' in text or '>>' in text or 'next' in alt_texts:
-                    next_href = a['href']
-                    break
-                    
-            if not next_href:
-                match = re.search(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(?:[^<]*?(?:next|&gt;&gt;|>>)[^<]*?)</a>', response.text, re.IGNORECASE)
-                if match:
-                    next_href = match.group(1)
-                    print("  [*] (Next link was found using Regex Fallback)")
-            
-            if next_href:
-                print(f"  [*] Navigating to next link: {next_href}")
-                
-                if 'javascript:' in next_href.lower() or next_href == '#':
-                    onclick = soup.find('a', href=next_href).get('onclick', '') if soup.find('a', href=next_href) else ''
-                    match = re.search(r'(\d+)', next_href + onclick)
+                    onclick = a.get('onclick', '')
+                    # Extract the explicit integer passed to turnToPage() from the HTML
+                    match = re.search(r'turnToPage\((\d+)\)', onclick)
                     if match:
-                        next_page_num = match.group(1)
-                        payload['page_number'] = next_page_num
-                        page_number += 1
-                        time.sleep(delay)
-                        try:
-                            response = session.post(SEARCH_URL, data=payload, headers=post_headers, timeout=15)
-                            response.raise_for_status()
-                        except requests.exceptions.RequestException as e:
-                            print(f"  [!] Error fetching POST page {page_number}: {e}")
-                            break
-                    else:
+                        next_page_val = match.group(1)
                         break
-                else:
-                    next_url = urllib.parse.urljoin(SEARCH_URL, next_href)
-                    current_form = soup.find('form', id='PRASearchForm')
-                    fresh_payload = {}
-                    if current_form:
-                        for hidden in current_form.find_all('input', type='hidden'):
-                            if hidden.get('name'):
-                                fresh_payload[hidden.get('name')] = hidden.get('value', '')
-                    fresh_payload['operation'] = '2'
-                    fresh_payload.update(user_params)
-                    
-                    page_number += 1
-                    time.sleep(delay)
-                    try:
-                        session.headers.update({'Referer': response.url})
-                        response = session.get(next_url, params=fresh_payload, timeout=15) 
-                        response.raise_for_status()
-                    except requests.exceptions.RequestException as e:
-                        print(f"  [!] Error fetching GET page {page_number}: {e}")
-                        break
+            
+            if next_page_val:
+                # Assign to 'page', NOT 'page_number'
+                payload['page'] = next_page_val
+                page_number += 1
+                time.sleep(delay)
+                
+                try:
+                    response = session.post(SEARCH_URL, data=payload, headers=post_headers, timeout=15)
+                    response.raise_for_status()
+                except requests.exceptions.RequestException as e:
+                    print(f"  [!] Error fetching POST page {page_number}: {e}")
+                    break
             else:
                 print("  [*] No 'Next' link detected. Reached the end of the results.")
                 break
-    # I needed a graceful way of stopping this behemoth; just using ctrl+c            
+                
     except KeyboardInterrupt:
         return "INTERRUPTED", extracted_rows
 
@@ -207,7 +207,6 @@ def scrape_payload(session, user_params, delay):
         return "SUCCESS", extracted_rows
     else:
         return "NO JOY", []
-
 
 def main():
     args = parse_args()
