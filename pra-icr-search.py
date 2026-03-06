@@ -110,7 +110,8 @@ def scrape_payload(session, user_params, delay):
                     total_records_str = records_match.group(1).replace(',', '')
                     try:
                         total_records = int(total_records_str)
-                        # Math ceiling division to safely calculate exact number of pages upfront
+                        # Math ceiling division to safely calculate exact number of pages upfront - this is a first approximation and should
+                        # be verified.
                         expected_pages = (total_records + 9) // 10 
                         print(f"  [*] Total Records Found: {total_records} (Calculated Target: {expected_pages} pages)")
                     except ValueError:
@@ -140,13 +141,12 @@ def scrape_payload(session, user_params, delay):
                 if len(cols) >= 9:
                     if "OMB Control No" in cols[0] or "OMB Control No" in cols[1]:
                         continue 
-                    # Removed deduplication logic; explicitly keeping all records
                     extracted_rows.append(cols[:10])
                     rows_added_this_page += 1
                     
             print(f"  [*] Scraped page {page_number}. Rows collected: {rows_added_this_page} (Total: {len(extracted_rows)})")
                     
-            # Using basic logic to exit and prevent an infinite loop since we can't pull n.pages from JS
+            # Using basic logic to exit and prevent an infinite loop since we can't pull n.pages from JS (again, first approximation)
             if expected_pages and page_number >= expected_pages:
                 print(f"  [*] Reached the calculated final page ({expected_pages}). Safely ending pagination loop.")
                 break
